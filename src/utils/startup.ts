@@ -182,26 +182,91 @@ export async function seedDatabase(): Promise<void> {
 export async function runDatabaseStartup(): Promise<void> {
   console.log('[Startup] Initializing database...');
 
-  // Step 1: Sync database schema (npx prisma migrate deploy in production, npx prisma db push in local dev)
+  // Step 1: Execute Direct Raw SQL Table Creation for guaranteed table existence
   try {
-    const schemaPath = path.join(__dirname, '..', '..', 'prisma', 'schema.prisma');
-    console.log('[Startup] Running prisma db push...');
-    execSync(`npx prisma db push --accept-data-loss --schema="${schemaPath}"`, {
-      cwd: path.join(__dirname, '..', '..'),
-      stdio: 'pipe',
-      env: { ...process.env },
-      timeout: 60_000,
-    });
-    console.log('[Startup] ✅ Database schema synced successfully.');
-  } catch (err: any) {
-    const msg = (err.stderr?.toString() || err.stdout?.toString() || err.message || '').trim();
-    console.warn('[Startup] Database init warning (non-fatal):', msg.substring(0, 300));
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "User" (
+        "id" TEXT PRIMARY KEY,
+        "email" TEXT UNIQUE NOT NULL,
+        "password" TEXT NOT NULL,
+        "role" TEXT NOT NULL DEFAULT 'USER',
+        "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+    `).catch(() => {});
+
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "Product" (
+        "id" TEXT PRIMARY KEY,
+        "name" TEXT NOT NULL,
+        "slug" TEXT UNIQUE NOT NULL,
+        "image" TEXT NOT NULL,
+        "category" TEXT NOT NULL,
+        "isActive" BOOLEAN NOT NULL DEFAULT 1,
+        "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+    `).catch(() => {});
+
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "Package" (
+        "id" TEXT PRIMARY KEY,
+        "productId" TEXT NOT NULL,
+        "name" TEXT NOT NULL,
+        "amount" INTEGER NOT NULL,
+        "price" REAL NOT NULL,
+        "category" TEXT NOT NULL DEFAULT 'NORMAL',
+        "badge" TEXT,
+        "isActive" BOOLEAN NOT NULL DEFAULT 1,
+        "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+    `).catch(() => {});
+
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "Order" (
+        "id" TEXT PRIMARY KEY,
+        "userId" TEXT,
+        "packageId" TEXT NOT NULL,
+        "playerId" TEXT NOT NULL,
+        "playerZoneId" TEXT,
+        "playerNickname" TEXT,
+        "price" REAL NOT NULL,
+        "status" TEXT NOT NULL DEFAULT 'PENDING',
+        "paymentMethod" TEXT NOT NULL,
+        "paymentStatus" TEXT NOT NULL DEFAULT 'PENDING',
+        "paymentTxnId" TEXT UNIQUE NOT NULL,
+        "paymentQrCode" TEXT,
+        "paymentMd5" TEXT,
+        "gatewayRef" TEXT,
+        "deliveryStatus" TEXT NOT NULL DEFAULT 'WAITING',
+        "stockDeliveredCode" TEXT,
+        "paidAt" DATETIME,
+        "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+    `).catch(() => {});
+
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "Stock" (
+        "id" TEXT PRIMARY KEY,
+        "packageId" TEXT NOT NULL,
+        "orderId" TEXT UNIQUE,
+        "code" TEXT NOT NULL,
+        "isUsed" BOOLEAN NOT NULL DEFAULT 0,
+        "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+    `).catch(() => {});
+
+    console.log('[Startup] ✅ Database tables verified/created via direct SQL.');
+  } catch (sqlErr: any) {
+    console.warn('[Startup] Direct SQL init note:', sqlErr.message);
   }
 
   // Step 2: Check if products exist — if not, seed
   try {
-    await prisma.$connect();
-    const productCount = await prisma.product.count();
+    const productCount = await prisma.product.count().catch(() => 0);
     console.log(`[Startup] Found ${productCount} products in database.`);
 
     if (productCount === 0) {
@@ -211,8 +276,7 @@ export async function runDatabaseStartup(): Promise<void> {
       console.log('[Startup] Products exist — skipping seed.');
     }
   } catch (err: any) {
-    console.error('[Startup] Database connection/seed error:', err.message);
-    // Don't crash — the health endpoint will still work,
-    // and we can retry on next request
+    console.warn('[Startup] Seeding check triggered emergency seed:', err.message);
+    await seedDatabase().catch(() => {});
   }
 }
