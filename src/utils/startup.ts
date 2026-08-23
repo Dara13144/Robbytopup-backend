@@ -44,7 +44,7 @@ const FF_PACKAGES = [
   { name: 'Monthly', amount: 1200, price: 7.60, category: 'NORMAL', badge: 'ទទួលបាន 1000 💎 ភ្លាមៗ' },
 ];
 
-const PRODUCTS_SEED = [
+export const PRODUCTS_SEED = [
   { name: 'MOBILE LEGENDS | KHMER',       slug: 'mobile-legends-khmer',       image: '/images/games/mlbb.png',       category: 'MOBILE_GAME', packages: MLBB_PACKAGES },
   { name: 'MOBILE LEGENDS | PHILIPPINES', slug: 'mobile-legends-philippines', image: '/images/games/mlbb.png',       category: 'MOBILE_GAME', packages: MLBB_PACKAGES },
   { name: 'MOBILE LEGENDS | INDONESIA',   slug: 'mobile-legends-indonesia',   image: '/images/games/mlbb.png',       category: 'MOBILE_GAME', packages: MLBB_PACKAGES },
@@ -128,7 +128,7 @@ const PRODUCTS_SEED = [
   },
 ];
 
-async function seedDatabase(): Promise<void> {
+export async function seedDatabase(): Promise<void> {
   console.log('[Startup] Seeding database with product catalog...');
 
   // Create admin user if not exists
