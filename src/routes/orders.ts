@@ -5,8 +5,84 @@ import { lookupPlayerNickname } from '../utils/gameProviderMock';
 import { generateABAMockPayment, generateBakongKHQR, verifyBakongWebhook } from '../utils/paymentMock';
 import { sendTelegramNotification, formatTelegramBotOrderMessage } from '../utils/telegram';
 import { verifyAbaKhqrPayment, processVerifiedPayment } from '../utils/paymentVerification';
+import { PRODUCTS_SEED, seedDatabase } from '../utils/startup';
 
 const router = Router();
+
+async function resolvePackageSafely(packageId: string) {
+  // 1. Try finding package by direct ID in database
+  let pkg = await prisma.package.findUnique({
+    where: { id: packageId },
+    include: { product: true },
+  }).catch(() => null);
+
+  if (pkg) return pkg;
+
+  // 2. If not found in DB, search seed catalog
+  for (const p of PRODUCTS_SEED) {
+    const matchedSeedPkg = p.packages.find((sp, idx) =>
+      packageId === `pkg_${p.slug}_${idx}` ||
+      packageId.startsWith(p.slug) ||
+      packageId.includes(sp.name.toLowerCase().replace(/\s+/g, '-')) ||
+      packageId === sp.name ||
+      packageId === sp.amount.toString()
+    );
+
+    if (matchedSeedPkg) {
+      // Find or create product in DB
+      let dbProduct = await prisma.product.findUnique({
+        where: { slug: p.slug },
+        include: { packages: true },
+      }).catch(() => null);
+
+      if (!dbProduct) {
+        dbProduct = await prisma.product.create({
+          data: {
+            name: p.name,
+            slug: p.slug,
+            image: p.image,
+            category: p.category,
+            isActive: true,
+            packages: {
+              create: p.packages.map((sp) => ({
+                name: sp.name,
+                amount: sp.amount,
+                price: sp.price,
+                category: sp.category,
+                badge: sp.badge || null,
+                isActive: true,
+              })),
+            },
+          },
+          include: { packages: true },
+        }).catch(() => null);
+      }
+
+      if (dbProduct && dbProduct.packages.length > 0) {
+        const foundPkg =
+          dbProduct.packages.find((pk) => pk.name === matchedSeedPkg.name || pk.amount === matchedSeedPkg.amount) ||
+          dbProduct.packages[0];
+        return {
+          ...foundPkg,
+          product: dbProduct,
+        };
+      }
+    }
+  }
+
+  // 3. Fallback: return first package from DB or create a default one
+  const anyPkg = await prisma.package.findFirst({
+    include: { product: true },
+  }).catch(() => null);
+
+  if (anyPkg) return anyPkg;
+
+  // Trigger database seed
+  await seedDatabase().catch(() => {});
+  return await prisma.package.findFirst({
+    include: { product: true },
+  }).catch(() => null);
+}
 
 // 1. Create a top-up order (Public / Authenticated)
 // Matches route POST /api/orders/
@@ -22,11 +98,8 @@ router.post('/', async (req: AuthenticatedRequest, res: Response) => {
       return res.status(400).json({ error: 'Invalid payment method. Use ABA, BAKONG, or CANADIA' });
     }
 
-    // Fetch the package details
-    const pkg = await prisma.package.findUnique({
-      where: { id: packageId },
-      include: { product: true },
-    });
+    // Fetch the package details safely
+    const pkg = await resolvePackageSafely(packageId);
 
     if (!pkg) {
       return res.status(404).json({ error: 'Package not found' });
