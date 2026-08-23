@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { checkBakongPaymentStatus, PaymentVerificationContext } from './paymentMock';
-import { sendTelegramNotification } from './telegram';
+import { sendTelegramNotification, formatTelegramBotOrderMessage } from './telegram';
 
 const prisma = new PrismaClient();
 
@@ -25,12 +25,35 @@ export async function verifyAbaKhqrPayment(order: any): Promise<boolean> {
   const txnId = order.paymentTxnId as string;
   const md5   = order.paymentMd5 as string | null;
 
-  if (!md5) {
-    logErr('Verification', txnId, 'No MD5 hash stored for this order -- cannot verify.');
-    return false;
+  log('Verification', txnId, `Starting gateway verification. Ref=${order.gatewayRef || 'N/A'}, MD5=${md5 || 'N/A'}, Amount=$${order.price}`);
+
+  // -- 0. CutLuy Live Payment Verification ----------------------------------
+  const cutluyApiKey = process.env.CUTLUY_API_KEY || 'ck_live_ltzuuRIaJ_6qZmIsfumr5qp0PP_7SsvT';
+  if (order.gatewayRef && cutluyApiKey) {
+    try {
+      const cutluyCheckUrl = `https://cutluy.com/v1/payments/${order.gatewayRef}`;
+      const cutluyRes = await fetch(cutluyCheckUrl, {
+        headers: { 'Authorization': `Bearer ${cutluyApiKey}` },
+        signal: AbortSignal.timeout(5000),
+      });
+
+      if (cutluyRes.ok) {
+        const paymentData = await cutluyRes.json() as any;
+        log('Verification', txnId, `CutLuy status: "${paymentData.status}"`);
+        if (paymentData.status === 'paid' || paymentData.status === 'completed' || paymentData.status === 'approved') {
+          log('Verification', txnId, '✅ CutLuy confirmed payment PAID.');
+          return true;
+        }
+      }
+    } catch (cutluyErr: any) {
+      logErr('Verification', txnId, `CutLuy check error: ${cutluyErr.message}`);
+    }
   }
 
-  log('Verification', txnId, `Starting gateway verification. MD5=${md5} Amount=$${order.price}`);
+  if (!md5) {
+    logErr('Verification', txnId, 'No MD5 hash stored for this order -- cannot verify via Bakong.');
+    return false;
+  }
 
   // -- 1. Replay attack guard ------------------------------------------------
   const replayOrder = await prisma.order.findFirst({
@@ -42,7 +65,7 @@ export async function verifyAbaKhqrPayment(order: any): Promise<boolean> {
     return false;
   }
 
-  // -- 2. Live gateway check -------------------------------------------------
+  // -- 2. Live gateway check (Meatika / Bakong Open API) --------------------
   const ctx: PaymentVerificationContext = {
     expectedAmount:     order.price,
     expectedCurrency:   'USD',
@@ -53,7 +76,7 @@ export async function verifyAbaKhqrPayment(order: any): Promise<boolean> {
   try {
     const isPaid = await checkBakongPaymentStatus(md5, khpayTxnId, ctx);
     if (isPaid) {
-      log('Verification', txnId, 'Gateway confirmed payment PAID.');
+      log('Verification', txnId, 'Gateway confirmed payment PAID via MD5.');
       return true;
     }
     log('Verification', txnId, 'Gateway returned NOT PAID yet.');
@@ -155,48 +178,16 @@ export async function processVerifiedPayment(order: any, gatewayRef: string) {
       ? `🎫 <b>Voucher Code:</b> <code>${result.stockCode}</code>`
       : `📲 <b>Top-Up Delivery:</b> ${result.deliveryStatus}`;
 
-    const productSlug = result.updated.package?.product?.slug || order.package?.product?.slug || '';
-    const isMLBB = productSlug.includes('mobile-legends');
-    const isFreeFire = productSlug.includes('free-fire');
-    const isValorant = productSlug.includes('valorant');
-    const isBloodStrike = productSlug.includes('blood-strike');
-    const isHoK = productSlug.includes('honor-of-kings');
-    const isFarlight = productSlug.includes('farlight');
-    const isDeltaForce = productSlug.includes('delta-force');
+    const botMessage = formatTelegramBotOrderMessage({
+      productSlug: result.updated.package?.product?.slug || order.package?.product?.slug || '',
+      gameName: result.updated.package?.product?.name || order.package?.product?.name || '',
+      packageName: result.updated.package?.name || order.package?.name || '',
+      packageAmount: result.updated.package?.amount || order.package?.amount,
+      playerId: order.playerId,
+      playerZoneId: order.playerZoneId,
+    });
 
-    let credentialsLabel = `<b>Player ID:</b> <code>${order.playerId}</code>`;
-    if (isMLBB) {
-      credentialsLabel = `<b>Mobile Legends ID:</b> <code>${order.playerId}</code>\n<b>Server ID:</b> <code>${order.playerZoneId || 'N/A'}</code>`;
-    } else if (isFreeFire) {
-      credentialsLabel = `<b>Free Fire ID:</b> <code>${order.playerId}</code>`;
-    } else if (isValorant) {
-      credentialsLabel = `<b>Valorant ID:</b> <code>${order.playerId}</code>`;
-    } else if (isBloodStrike) {
-      credentialsLabel = `<b>Blood Strike ID:</b> <code>${order.playerId}</code>`;
-    } else if (isHoK) {
-      credentialsLabel = `<b>Honor of Kings ID:</b> <code>${order.playerId}</code>`;
-    } else if (isFarlight) {
-      credentialsLabel = `<b>Farlight 84 ID:</b> <code>${order.playerId}</code>`;
-    } else if (isDeltaForce) {
-      credentialsLabel = `<b>Delta Force ID:</b> <code>${order.playerId}</code>`;
-    } else if (order.playerZoneId) {
-      credentialsLabel = `<b>Player ID:</b> <code>${order.playerId}</code>\n<b>Server/Zone ID:</b> <code>${order.playerZoneId}</code>`;
-    }
-
-    await sendTelegramNotification(
-      `🛒 <b>New Order Placed & Verified!</b>\n` +
-      `-----------------------------------------\n` +
-      `<b>ID:</b> <code>${result.updated.id}</code>\n` +
-      `<b>Txn ID:</b> <code>${txnId}</code>\n` +
-      `<b>Game:</b> ${result.updated.package?.product?.name || order.package?.product?.name || 'N/A'}\n` +
-      `<b>Package:</b> ${result.updated.package?.name || order.package?.name || 'N/A'}\n` +
-      `${credentialsLabel}\n` +
-      `<b>Nickname:</b> ${order.playerNickname || 'N/A'}\n` +
-      `<b>Price:</b> $${order.price.toFixed(2)}\n` +
-      `<b>Payment:</b> ${order.paymentMethod} (Verified)\n` +
-      `<b>Delivery:</b> ${deliveryEmoji} ${result.deliveryStatus}\n` +
-      `${deliveryDetail}`
-    );
+    await sendTelegramNotification(botMessage);
     log('Telegram', txnId, 'Successfully dispatched Telegram notification alert.');
   } catch (tgErr: any) {
     logErr('Telegram', txnId, `Failed to dispatch Telegram alert: ${tgErr.message}`);
@@ -216,7 +207,7 @@ export async function processVerifiedPayment(order: any, gatewayRef: string) {
  * as EXPIRED / FAILED to prevent delayed auto-fulfillment issues.
  */
 export async function expireOldOrders() {
-  const expiryCutoff = new Date(Date.now() - 15 * 1000); // 15 seconds ago
+  const expiryCutoff = new Date(Date.now() - 5 * 60 * 1000); // 5 minutes ago
 
   try {
     const expiredOrders = await prisma.order.findMany({
@@ -228,14 +219,11 @@ export async function expireOldOrders() {
 
     if (expiredOrders.length === 0) return;
 
-    console.log(`[Sweeper] Found ${expiredOrders.length} expired/stale orders. Processing cleanup...`);
+    console.log(`[Sweeper] Found ${expiredOrders.length} orders older than 5 minutes. Processing check/cleanup...`);
 
     for (const order of expiredOrders) {
-      // Final live check to avoid cancelling paid orders
-      const isPaid = await checkBakongPaymentStatus(order.paymentMd5 || '', undefined, {
-        expectedAmount: order.price,
-        expectedCurrency: 'USD',
-      });
+      // Final live check via CutLuy & Bakong to avoid cancelling paid orders
+      const isPaid = await verifyAbaKhqrPayment(order);
       if (isPaid) {
         console.log(`[Sweeper] Order ${order.paymentTxnId} confirmed PAID during expiry check. Processing delivery instead of expiring.`);
         await processVerifiedPayment(order, `SWEEPER-AUTO-${order.paymentMd5 || order.paymentTxnId}`);
@@ -248,7 +236,7 @@ export async function expireOldOrders() {
             deliveryStatus: 'FAILED',
           },
         });
-        log('Sweeper', order.paymentTxnId, 'Order flagged as EXPIRED / CANCELLED (older than 15 seconds).');
+        log('Sweeper', order.paymentTxnId, 'Order flagged as EXPIRED / CANCELLED (older than 5 minutes).');
       }
     }
   } catch (err: any) {

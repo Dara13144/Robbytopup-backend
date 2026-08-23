@@ -3,7 +3,7 @@ import prisma from '../prisma';
 import { AuthenticatedRequest } from '../middleware/auth';
 import { lookupPlayerNickname } from '../utils/gameProviderMock';
 import { generateABAMockPayment, generateBakongKHQR, verifyBakongWebhook } from '../utils/paymentMock';
-import { sendTelegramNotification } from '../utils/telegram';
+import { sendTelegramNotification, formatTelegramBotOrderMessage } from '../utils/telegram';
 import { verifyAbaKhqrPayment, processVerifiedPayment } from '../utils/paymentVerification';
 
 const router = Router();
@@ -55,8 +55,13 @@ router.post('/', async (req: AuthenticatedRequest, res: Response) => {
       const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-key-change-in-production-12345';
       try {
         const decoded = require('jsonwebtoken').verify(token, JWT_SECRET) as { id: string; email: string };
-        userId = decoded.id;
-        contactEmail = decoded.email;
+        // Verify user actually exists in DB to avoid FK constraint violation
+        const userExists = await prisma.user.findUnique({ where: { id: decoded.id }, select: { id: true } });
+        if (userExists) {
+          userId = decoded.id;
+          contactEmail = decoded.email;
+        }
+        // If user not found in DB, continue as guest (userId remains null)
       } catch (err) {
         // Ignore invalid token and create as guest
       }
@@ -125,50 +130,6 @@ router.post('/', async (req: AuthenticatedRequest, res: Response) => {
         deliveryStatus: 'WAITING',
       },
     });
-
-    // Send Telegram Alert for new order
-    const productSlug = pkg.product.slug || '';
-    const isMLBB = productSlug.includes('mobile-legends');
-    const isFreeFire = productSlug.includes('free-fire');
-    const isValorant = productSlug.includes('valorant');
-    const isBloodStrike = productSlug.includes('blood-strike');
-    const isHoK = productSlug.includes('honor-of-kings');
-    const isFarlight = productSlug.includes('farlight');
-    const isDeltaForce = productSlug.includes('delta-force');
-
-    let credentialsLabel = `<b>Player ID:</b> <code>${playerId}</code>`;
-    if (isMLBB) {
-      credentialsLabel = `<b>Mobile Legends ID:</b> <code>${playerId}</code>\n<b>Server ID:</b> <code>${playerZoneId || 'N/A'}</code>`;
-    } else if (isFreeFire) {
-      credentialsLabel = `<b>Free Fire ID:</b> <code>${playerId}</code>`;
-    } else if (isValorant) {
-      credentialsLabel = `<b>Valorant ID:</b> <code>${playerId}</code>`;
-    } else if (isBloodStrike) {
-      credentialsLabel = `<b>Blood Strike ID:</b> <code>${playerId}</code>`;
-    } else if (isHoK) {
-      credentialsLabel = `<b>Honor of Kings ID:</b> <code>${playerId}</code>`;
-    } else if (isFarlight) {
-      credentialsLabel = `<b>Farlight 84 ID:</b> <code>${playerId}</code>`;
-    } else if (isDeltaForce) {
-      credentialsLabel = `<b>Delta Force ID:</b> <code>${playerId}</code>`;
-    } else if (playerZoneId) {
-      credentialsLabel = `<b>Player ID:</b> <code>${playerId}</code>\n<b>Server/Zone ID:</b> <code>${playerZoneId}</code>`;
-    }
-
-    const telegramMessage = 
-      `🛒 <b>New Order Placed!</b>\n` +
-      `-----------------------------------------\n` +
-      `<b>ID:</b> <code>${order.id}</code>\n` +
-      `<b>Txn ID:</b> <code>${paymentTxnId}</code>\n` +
-      `<b>Game:</b> ${pkg.product.name}\n` +
-      `<b>Package:</b> ${pkg.name}\n` +
-      `${credentialsLabel}\n` +
-      `<b>Nickname:</b> ${nickname}\n` +
-      `<b>Price:</b> $${pkg.price.toFixed(2)}\n` +
-      `<b>Payment:</b> ${paymentMethod}\n` +
-      `<b>Status:</b> PENDING`;
-    
-    await sendTelegramNotification(telegramMessage);
 
     return res.status(201).json({
       message: 'Order created successfully',
@@ -292,9 +253,9 @@ router.post('/verify/:txnId', async (req, res) => {
       return res.status(410).json({ verified: false, error: 'Order has expired. Please create a new order.' });
     }
 
-    // Expire orders older than 15 seconds
+    // Expire orders older than 5 minutes
     const orderAgeMs = Date.now() - new Date(order.createdAt).getTime();
-    if (orderAgeMs > 15 * 1000) {
+    if (orderAgeMs > 5 * 60 * 1000) {
       await prisma.order.update({
         where: { id: order.id },
         data: { paymentStatus: 'EXPIRED', status: 'CANCELLED', deliveryStatus: 'FAILED' },

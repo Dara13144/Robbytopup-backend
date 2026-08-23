@@ -113,48 +113,63 @@ export function calculateCRC16(data: string): string {
   return crc.toString(16).toUpperCase().padStart(4, '0');
 }
 
+export interface BakongQRResponse {
+  qrCode: string; // The raw KHQR string
+  md5: string;    // MD5 of the QR code
+  txnId: string;
+  gatewayRef?: string;
+  checkoutUrl?: string;
+}
+
 export async function generateBakongKHQR(
   tranId: string,
   amount: number,
   itemName: string
 ): Promise<BakongQRResponse> {
   const amountStr = amount.toFixed(2);
-  console.log(`[Bakong KHQR Generator] Starting generation for Txn ID: "${tranId}", Amount: $${amountStr}, Item Name: "${itemName}"`);
+  console.log(`[KHQR Generator] Starting generation for Txn ID: "${tranId}", Amount: $${amountStr}, Item: "${itemName}"`);
 
-  // ── 0. MEATIKA KHQR API (khqr-api.meatika.dev) ──────────────────────────
-  const meatikaApiKey = process.env.MEATIKA_API_KEY || 
-                        (process.env.BAKONG_TOKEN?.startsWith('sk_') ? process.env.BAKONG_TOKEN : '') || 
-                        '';
-  const rawMeatikaUrl = process.env.MEATIKA_API_URL || 
-                        (process.env.BAKONG_API?.includes('meatika') ? process.env.BAKONG_API : '') || 
-                        'https://khqr-api.meatika.dev';
-  const meatikaApiUrl = rawMeatikaUrl.replace(/\/$/, '').replace(/\/api$/, '') + '/api';
+  // ── 0. CUTLUY LIVE PAYMENT API (cutluy.com/v1/payments) ──────────────────
+  const cutluyApiKey = process.env.CUTLUY_API_KEY || 'ck_live_ltzuuRIaJ_6qZmIsfumr5qp0PP_7SsvT';
+  const cutluyApiUrl = process.env.CUTLUY_API_URL || 'https://cutluy.com/v1/payments';
 
-  if (meatikaApiKey) {
+  if (cutluyApiKey) {
     try {
-      const generateUrl = `${meatikaApiUrl}/generate-khqr?amount=${parseFloat(amountStr)}&api_key=${meatikaApiKey}`;
-      console.log(`[Bakong KHQR Generator] Trying Meatika: ${generateUrl}`);
-
-      const apiRes = await fetch(generateUrl, {
-        method: 'GET',
-        signal: AbortSignal.timeout(5000),
+      console.log(`[KHQR Generator] Generating live KHQR via CutLuy: ${cutluyApiUrl}`);
+      const cutluyRes = await fetch(cutluyApiUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${cutluyApiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          amount: parseFloat(amountStr),
+          reference_id: tranId,
+        }),
+        signal: AbortSignal.timeout(7000),
       });
 
-      console.log(`[Bakong KHQR Generator] Meatika response status: ${apiRes.status}`);
-      if (apiRes.ok) {
-        const resData = await apiRes.json() as any;
-        console.log('[Bakong KHQR Generator] Meatika Response JSON:', JSON.stringify(resData));
-        if (resData.qr_string && resData.md5) {
-          console.log('[Bakong KHQR Generator] ✅ KHQR generated successfully via Meatika.');
+      console.log(`[KHQR Generator] CutLuy response status: ${cutluyRes.status}`);
+      if (cutluyRes.ok) {
+        const paymentData = await cutluyRes.json() as any;
+        console.log('[KHQR Generator] CutLuy Live Payment JSON:', JSON.stringify(paymentData));
+        if (paymentData.qr_string) {
+          const md5Hash = crypto.createHash('md5').update(paymentData.qr_string).digest('hex').toLowerCase();
+          console.log(`[KHQR Generator] ✅ Live KHQR generated via CutLuy. CutLuy ID: ${paymentData.id}, MD5: ${md5Hash}`);
           return {
-            qrCode: resData.qr_string,
-            md5:    resData.md5.toLowerCase().trim(),
-            txnId:  tranId,
+            qrCode: paymentData.qr_string,
+            md5: md5Hash,
+            txnId: tranId,
+            gatewayRef: paymentData.id,
+            checkoutUrl: paymentData.checkout_url,
           };
         }
+      } else {
+        const errText = await cutluyRes.text();
+        console.warn(`[KHQR Generator] CutLuy API error (${cutluyRes.status}):`, errText);
       }
-    } catch (apiErr: any) {
-      console.error('[Bakong KHQR Generator] Meatika generation failed:', apiErr.message || apiErr);
+    } catch (cutluyErr: any) {
+      console.error('[KHQR Generator] CutLuy generation error:', cutluyErr.message || cutluyErr);
     }
   }
 

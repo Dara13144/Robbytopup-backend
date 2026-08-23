@@ -55,3 +55,40 @@ export async function sendTelegramNotification(message: string): Promise<boolean
   return allSuccess;
 }
 
+export interface TelegramOrderPayload {
+  productSlug?: string;
+  gameName?: string;
+  packageName?: string;
+  packageAmount?: number;
+  playerId: string;
+  playerZoneId?: string | null;
+}
+
+/**
+ * Formats the Telegram message to send on a single line separated by space:
+ * - For MLBB: "87654321 1234 11 Diamonds" (Player ID, Server ID, Package/Diamond)
+ * - For other games: "87654321 11 Diamonds" (Player ID, Package/Diamond)
+ */
+export function formatTelegramBotOrderMessage(order: TelegramOrderPayload): string {
+  const isMLBB =
+    (order.productSlug || '').toLowerCase().includes('mobile-legends') ||
+    (order.gameName || '').toLowerCase().includes('mobile legends') ||
+    !!order.playerZoneId;
+
+  const diamond = order.packageName || (order.packageAmount ? `${order.packageAmount} Diamonds` : 'Diamonds');
+
+  if (isMLBB) {
+    const parts = [
+      order.playerId,
+      order.playerZoneId || '',
+      diamond,
+    ].filter(Boolean);
+    return `<code>${parts.join(' ')}</code>`;
+  }
+
+  const parts = [
+    order.playerId,
+    diamond,
+  ].filter(Boolean);
+  return `<code>${parts.join(' ')}</code>`;
+}
