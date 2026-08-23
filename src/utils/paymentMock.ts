@@ -238,7 +238,7 @@ export async function generateBakongKHQR(
         const finalAmount = isKhrAccount ? Math.round(amount * 4100) : parseFloat(amountStr);
 
         const frontendUrl = (process.env.FRONTEND_URL || 'https://daratopup.com').trim().replace(/\/$/, '');
-        const backendUrl = (process.env.BACKEND_URL || 'https://daratopup-backend-1.onrender.com').trim().replace(/\/$/, '');
+        const backendUrl = (process.env.BACKEND_URL || 'https://robbytopup-backend.onrender.com').trim().replace(/\/$/, '');
 
         const payload = {
           trans_id: tranId,

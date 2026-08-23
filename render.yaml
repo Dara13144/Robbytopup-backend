@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: daratopup-backend
+    name: robbytopup-backend
     env: node
     region: singapore
     plan: free
@@ -16,7 +16,7 @@ services:
       - key: SANDBOX_MODE
         value: "true"
       - key: BACKEND_URL
-        value: https://daratopup-backend-1.onrender.com
+        value: https://robbytopup-backend.onrender.com
       # IMPORTANT: Set DATABASE_URL in Render dashboard!
       # For SQLite (simple/free): DATABASE_URL=file:./dev.db
       # For PostgreSQL (persistent): DATABASE_URL=postgresql://...
