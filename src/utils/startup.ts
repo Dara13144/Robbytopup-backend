@@ -185,27 +185,14 @@ export async function runDatabaseStartup(): Promise<void> {
   // Step 1: Sync database schema (npx prisma migrate deploy in production, npx prisma db push in local dev)
   try {
     const schemaPath = path.join(__dirname, '..', '..', 'prisma', 'schema.prisma');
-    const isProd = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
-
-    if (isProd) {
-      console.log('[Startup] Running prisma migrate deploy...');
-      execSync(`npx prisma migrate deploy --schema="${schemaPath}"`, {
-        cwd: path.join(__dirname, '..', '..'),
-        stdio: 'pipe',
-        env: { ...process.env },
-        timeout: 60_000,
-      });
-      console.log('[Startup] ✅ Database migrations applied successfully.');
-    } else {
-      console.log('[Startup] Running prisma db push...');
-      execSync(`npx prisma db push --accept-data-loss --schema="${schemaPath}"`, {
-        cwd: path.join(__dirname, '..', '..'),
-        stdio: 'pipe',
-        env: { ...process.env },
-        timeout: 60_000,
-      });
-      console.log('[Startup] ✅ Local database schema synced successfully.');
-    }
+    console.log('[Startup] Running prisma db push...');
+    execSync(`npx prisma db push --accept-data-loss --schema="${schemaPath}"`, {
+      cwd: path.join(__dirname, '..', '..'),
+      stdio: 'pipe',
+      env: { ...process.env },
+      timeout: 60_000,
+    });
+    console.log('[Startup] ✅ Database schema synced successfully.');
   } catch (err: any) {
     const msg = (err.stderr?.toString() || err.stdout?.toString() || err.message || '').trim();
     console.warn('[Startup] Database init warning (non-fatal):', msg.substring(0, 300));
